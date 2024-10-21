@@ -1,3 +1,4 @@
+from datetime import datetime
 import requests
 import plugins
 from plugins import *
@@ -11,51 +12,50 @@ BASE_URL_XIAROU = "http://api.suxun.site/api/"
 
 @plugins.register(name="zaobao",
                   desc="获取早报",
-                  version="1.0",
+                  version="1.1",
                   author="masterke",
                   desire_priority=100)
 class zaobao(Plugin):
-    content = None
-    config_data = None
     def __init__(self):
         super().__init__()
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         logger.info(f"[{__class__.__name__}] inited")
 
-    def get_help_text(self, **kwargs):
-        help_text = f"获取早报信息"
-        return help_text
+
 
     def on_handle_context(self, e_context: EventContext):
+        self.context = e_context['context']
+        self.e_context = e_context
+        self.channel = e_context['channel']
+        self.message = e_context["context"].content
         # 只处理文本消息
-        if e_context['context'].type != ContextType.TEXT:
+        if self.context.type != ContextType.TEXT:
             return
-        self.content = e_context["context"].content.strip()
-        
-        if self.content == "早报":
-            logger.info(f"[{__class__.__name__}] 收到消息: {self.content}")
-            # 读取配置文件
-            config_path = os.path.join(os.path.dirname(__file__),"config.json")
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as file:
-                    self.config_data = json.load(file)
-            else:
-                logger.error(f"请先配置{config_path}文件")
-                return
-            
-            reply = Reply()
-            result = self.zaobao()
-            if result != None:
-                reply.type = ReplyType.TEXT
-                reply.content = result
-                e_context["reply"] = reply
-                e_context.action = EventAction.BREAK_PASS
-            else:
-                reply.type = ReplyType.ERROR
-                reply.content = "获取失败,等待修复⌛️"
-                e_context["reply"] = reply
-                e_context.action = EventAction.BREAK_PASS
-
+        elif self.message != "早报":
+            return
+        # =======================读取配置文件==========================
+        logger.info(f"[{__class__.__name__}] 收到消息: {self.message}")
+        config_path = os.path.join(os.path.dirname(__file__),"config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as file:
+                self.config_data = json.load(file)
+        else:
+            logger.error(f"请先配置{config_path}文件")
+            return
+        # =======================插件处理流程==========================
+        result, result_type = self.zaobao()
+        reply = Reply()
+        if result != None:
+            reply.type = result_type
+            reply.content = result
+            self.e_context["reply"] = reply
+            self.e_context.action = EventAction.BREAK_PASS
+        else:
+            reply.type = ReplyType.ERROR
+            reply.content = "获取失败,等待修复⌛️"
+            self.e_context["reply"] = reply
+            self.e_context.action = EventAction.BREAK_PASS
+    # =======================函数定义部分==========================
     def zaobao(self):
         try:
             #主接口
@@ -67,17 +67,19 @@ class zaobao(Plugin):
                                      headers=headers,
                                      timeout=2)
             if response.status_code == 200:
-                json_data = response.json()
-                if json_data.get('code') == 200 and json_data['data']['news']:
-                    data = json_data['data']['news']
+                rjson = response.json()
+                
+                if response.status_code !=200 or rjson.get('code') != 200 or rjson['data']['news'] == None:
+                    logger.error(f"主接口返回异常:{rjson}")
+                    raise requests.ConnectionError
+                else:
+                    data = rjson['data']['news']
                     data = [i.rstrip("；") for i in data]
                     text = "\n====================\n".join(data[:10])
-                    text = f"☀️早上好,今天是{json_data['data']['date']}\n\n" + text
+                    formatted_date = datetime.strptime(rjson['data']['date'], "%Y-%m-%d").strftime("%Y年%m月%d日")
+                    text = f"☀️早上好，今天是{formatted_date}\n\n" + text
                     logger.info(f"主接口获取早报成功:{data}")
-                    return text
-                else:
-                    logger.error(f"主接口返回参数异常:{json_data}")
-                    raise ValueError('not found data')
+                    return text, ReplyType.TEXT
             else:
                 logger.error(f"主接口请求失败:{response.status_code}")
                 raise requests.ConnectionError
@@ -93,20 +95,25 @@ class zaobao(Plugin):
                                          headers=headers,
                                          timeout=2)
                 if response.status_code == 200:
-                    json_data = response.json()
-                    if json_data.get('code') == "200" and json_data["news"]:
-                        data = json_data["news"]
+                    rjson = response.json()
+                    if response.status_code !=200 or rjson.get('code') != "200" or rjson['news'] == None:
+                        logger.error(f"备用接口返回异常:{rjson}")
+                        return None, ReplyType.ERROR
+                    else:
+                        data = rjson["news"]
                         data = [i.rstrip("；") for i in data]
                         text = "\n====================\n".join(data[:10])
-                        text = f"☀️早上好,今天是{json_data['date']}\n\n" + text
+                        text = f"☀️早上好，今天是{rjson['date']}\n\n" + text
                         logger.info(f"备用接口获取早报成功:{data}")
-                        return text
-                    else:
-                        logger.error(f"备用接口返回参数异常:{json_data}")
+                        return text, ReplyType.TEXT
                 else:
                     logger.error(f"备用接口请求失败:{response.status_code}")
             except Exception as e:
                 logger.error(f"备用接口抛出异常:{e}")
         
         logger.error(f"所有接口都挂了,无法获取")
-        return None
+        return None, ReplyType.ERROR
+
+    def get_help_text(self, **kwargs):
+        help_text = f"发送【早报】获取早报信息"
+        return help_text
